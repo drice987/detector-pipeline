@@ -75,7 +75,7 @@ This is designed to run in a persistent Docker environment.
 Clone the repository and install the dependencies:
 
 ```bash
-git clone [https://github.com/drice987/detector-pipeline.git](https://github.com/drice987/detector-pipeline.git)
+git clone https://github.com/drice987/detector-pipeline.git
 cd detector-pipeline
 pip install -r requirements.txt
 ```
