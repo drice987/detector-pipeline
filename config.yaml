@@ -1,0 +1,40 @@
+# ==========================================
+# Detector Pipeline Configuration
+# ==========================================
+
+directories:
+  watch_dir: "synthetic_data"   # Folder to monitor for incoming files
+  use_dark: True                # Enable/disable dark subtraction
+  dark_filename: "dark_background.h5"
+  poll_interval_sec: 0.01        # File I/O polling speed
+
+processing:
+  integration_axis: "horizontal" # 'vertical' (sums rows) or 'horizontal' (sums cols)
+  row_bounds: [0, 1024]          # Vertical ROI bounds [start, end]
+  col_bounds: [0, 256]           # Horizontal ROI bounds [start, end]
+  alignment_mode: "dynamic"      # 'dynamic' (sub-pixel shift along dispersion axis) or 'static'
+  expected_peak_center: 180      # if 'dynamic', will set center for expected alignment peak (ie elastic line), if alignment_mode = 'dynamic' and expected_peak_center is None, will use maximum
+  fit_window: 40                 # if 'dynamic' will set the window to search for alignment peak to align in the case of drift
+  alignment_width_guess: 10.0    # if 'dynamic' is used as the starting estimated width for the alignment peak
+  h5_data_path: "entry/data/counts" # Internal HDF5 path to the 2D array
+  h5_i0_path: null               # Internal HDF5 path for I0 normalization (optional), if null/None will default to area normalization
+
+initialization:
+  min_init_scans: 3              # Number of scans required to build the reference frame
+
+filtering:
+  cosmic_ray_sigma: 7.0          # MAD threshold for despiking
+  cosmic_ray_size: 3             # Pixel neighborhood size for local median
+
+thresholds:
+  shape_correlation_min: 0.80    # Minimum Pearson-R correlation to accept a scan
+
+qa:                              #Track scan quality assurance in dashboard output
+  enable_integrity_tracking: true
+  rolling_window_size: 200       # How many past scans to show on the dashboard
+
+export:
+  output_h5_filename: "current_ave.h5"
+  output_dashboard_filename: "Dashboard.png"
+  throttle_sec: 5                # Minimum time between dashboard image updates
+  metadata_paths: "none"         # 'none', 'all', or a list of HDF5 paths e.g., ['entry/motor_x']

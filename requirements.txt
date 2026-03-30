@@ -1,0 +1,11 @@
+numpy
+scipy
+h5py
+matplotlib
+watchdog
+PyYAML
+
+# --- Optional Dependencies ---
+#Only needed for certain file types
+#tifffile	#Required for TIFF images
+#sif_parser	#Required for Andor SIF images
