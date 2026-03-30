@@ -78,25 +78,25 @@ Clone the repository and install the dependencies:
 git clone [https://github.com/drice987/detector-pipeline.git](https://github.com/drice987/detector-pipeline.git)
 cd detector-pipeline
 pip install -r requirements.txt
-
+```
 Note: If your detector uses proprietary data formats, uncomment tifffile and/or sif_parser in requirements.txt before installing.
 Usage
 
     Copy config.yaml and adjust the detector dimensions, crop boundaries, and integration axis for your setup.
 
-    Run the pipeline:
+Run the pipeline:
 
-Bash
+```Bash
 
 python detector_pipeline.py
-
-    Route your detector output to the watch_dir specified in your config.
+```
+Route your detector output to the watch_dir specified in your config.
 
 The script will automatically update an averaged file (.h5) and a dashboard image (.png) as new data arrives.
 
-Configuration
+### Configuration
 
 All pipeline parameters—including expected peak centers, despiking thresholds, and dark frame subtraction—are managed in config.yaml. 
-```
+
 ## License
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
