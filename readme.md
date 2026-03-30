@@ -50,6 +50,14 @@ The script can be set to align to certain features, such as an elastic line, to 
 The pipeline's core mathematical and plotting functions are decoupled from the monitoring engine. <br>
 *See 'Example_analysis.ipynb' for a demonstration*
 
+### Running with Docker
+If you wish, you can run the pipeline as a container:
+
+1. Ensure [Docker Desktop](https://www.docker.com/products/docker-desktop/) is installed.
+2. Build and start the pipeline:
+   ```bash
+   docker-compose up --build
+
 ## Installation
 Clone the repository and install the dependencies:
 
