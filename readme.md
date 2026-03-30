@@ -82,7 +82,7 @@ pip install -r requirements.txt
 Note: If your detector uses proprietary data formats, uncomment tifffile and/or sif_parser in requirements.txt before installing.
 Usage
 
-    Copy config.yaml and adjust the detector dimensions, crop boundaries, and integration axis for your setup.
+Copy config.yaml and adjust the detector dimensions, crop boundaries, and integration axis for your setup.
 
 Run the pipeline:
 
