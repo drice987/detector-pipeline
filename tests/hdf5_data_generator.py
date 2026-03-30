@@ -3,7 +3,7 @@ import numpy as np
 import time
 from pathlib import Path
 
-def generate_synthetic_run(output_dir="../synthetic_data", num_scans=150,spatial = 'vertical'):
+def generate_synthetic_run(output_dir="./shared_data", num_scans=150,spatial = 'vertical'):
     out_path = Path(output_dir)
         
     print(f"Scans in '{output_dir}'...")

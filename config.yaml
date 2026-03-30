@@ -3,7 +3,7 @@
 # ==========================================
 
 directories:
-  watch_dir: "synthetic_data"   # Folder to monitor for incoming files
+  watch_dir: "shared_data"   # Folder to monitor for incoming files
   use_dark: True                # Enable/disable dark subtraction
   dark_filename: "dark_background.h5"
   poll_interval_sec: 0.01        # File I/O polling speed

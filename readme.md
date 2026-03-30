@@ -50,13 +50,26 @@ The script can be set to align to certain features, such as an elastic line, to 
 The pipeline's core mathematical and plotting functions are decoupled from the monitoring engine. <br>
 *See 'Example_analysis.ipynb' for a demonstration*
 
-### Running with Docker
-If you wish, you can run the pipeline as a container:
+## Running with Docker
+This is designed to run in a persistent Docker environment.
 
 1. Ensure [Docker Desktop](https://www.docker.com/products/docker-desktop/) is installed.
-2. Build and start the pipeline:
+2. Launch the container in the background:
    ```bash
-   docker-compose up --build
+   docker compose up --build -d
+   ```
+3. Run the Simulation (Optional)
+    ```bash
+    docker compose exec generator python tests/hdf5_data_generator.py
+    ```
+4. Run the pipeline
+    ```bash
+    docker compose exec pipeline python detector_pipeline.py
+    ```
+5. Shut Down
+    ```bash
+    docker compose down
+    ```
 
 ## Installation
 Clone the repository and install the dependencies:
@@ -75,7 +88,7 @@ Usage
 
 Bash
 
-python spectroscopy_pipeline.py
+python detector_pipeline.py
 
     Route your detector output to the watch_dir specified in your config.
 
