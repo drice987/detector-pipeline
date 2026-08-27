@@ -11,6 +11,7 @@ import yaml
 import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
+import argparse
 
 class DashboardRenderer:
     """Handles the rendering and exporting of pipeline visual dashboards."""
@@ -175,10 +176,8 @@ class AutomatedDetectorPipeline:
         """Detects and patches NaNs and Infs with the local array median."""
         bad_mask = ~np.isfinite(data)
         if bad_mask.any():
-            clean_data = np.copy(data)
-            safe_median = np.nanmedian(clean_data) if not np.all(bad_mask) else 0.0
-            clean_data[bad_mask] = safe_median
-            return clean_data
+            safe_median = np.nanmedian(data) if not np.all(bad_mask) else 0.0
+            data[bad_mask] = safe_median
         return data
 
     def _extract_metadata(self, hf: h5py.File) -> dict:
@@ -320,9 +319,9 @@ class AutomatedDetectorPipeline:
             popt, _ = curve_fit(_gaussian, x_fit, fit_profile, 
                                 p0=[c_guess_global, amp_guess, w_guess, np.min(fit_profile)],
                                 bounds=fit_bounds)
-            return popt[0], popt[1], popt[3], popt[2] 
+            return float(popt[0])
         except RuntimeError:
-            return float(c_guess_global), amp_guess, np.min(fit_profile), w_guess
+            return float(c_guess_global)
 
     def _welford_update(self, raw_1d: np.ndarray, raw_2d: np.ndarray, 
                         norm_1d: np.ndarray, norm_2d: np.ndarray, raw_intensity: float):
@@ -361,20 +360,16 @@ class AutomatedDetectorPipeline:
         self.logger.info("Sufficient files buffered...")
         n_scans = len(self.init_buffer_arrays)
         
-        centers = []
-        for raw_1d in self.init_buffer_arrays:
-            c, _, _, _ = self._find_elastic_params(raw_1d)
-            centers.append(c)
-        
+        centers = [self._find_elastic_params(raw_1d) for raw_1d in self.init_buffer_arrays]
         self.reference_center = np.median(centers)
-        
+                
         for i in range(n_scans):
             raw_1d = self.init_buffer_arrays[i]
             raw_2d = self.init_buffer_arrays_2d[i]
             i0_val = self.init_buffer_i0[i]
             current_metadata = self.init_buffer_metadata[i]
             
-            c, _, _, _ = self._find_elastic_params(raw_1d)
+            c = self._find_elastic_params(raw_1d)
             shift_val = self.reference_center - c if self.alignment_mode == 'dynamic' else 0.0
             
             if shift_val == 0.0:
@@ -395,9 +390,7 @@ class AutomatedDetectorPipeline:
             self.logger.info(f"[INIT] {self.init_buffer_files[i]}")
             
             for key, val in current_metadata.items():
-                if key not in self.metadata_history:
-                    self.metadata_history[key] = []
-                self.metadata_history[key].append(val)
+                self.metadata_history.setdefault(key, []).append(val)
             
         self.is_initialized = True
         self.needs_export = True
@@ -463,7 +456,7 @@ class AutomatedDetectorPipeline:
             if len(self.init_buffer_arrays) >= self.min_init_scans: 
                 self._attempt_initialization()
         else:
-            c, _, _, _ = self._find_elastic_params(raw_1d)
+            c = self._find_elastic_params(raw_1d)
             shift_val = self.reference_center - c if self.alignment_mode == 'dynamic' else 0.0
             
             if shift_val == 0.0:
@@ -621,7 +614,21 @@ class DataFileHandler(FileSystemEventHandler):
 
 
 if __name__ == "__main__":
-    pipeline = AutomatedDetectorPipeline()
+
+    parser = argparse.ArgumentParser(
+        description="Automated Live Data Reduction Pipeline for 2D Detectors",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+    )
+    parser.add_argument(
+        'config',
+        nargs='?', 
+        default='config.yaml',
+        help='Path to the YAML configuration file'
+    )
+
+    args = parser.parse_args()
+
+    pipeline = AutomatedDetectorPipeline(config_path=args.config)
     
     print(f"Checking {pipeline.watch_dir} for existing backlog...")
     valid_extensions = {'.npy', '.h5', '.hdf5', '.sif','.tif','.tiff'}
