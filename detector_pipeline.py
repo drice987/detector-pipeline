@@ -114,7 +114,7 @@ class AutomatedDetectorPipeline:
         )
         self.logger = logging.getLogger(__name__)
         
-        with open(config_path, 'r') as f:
+        with open(config_path, 'r', encoding='utf-8') as f:
             self.config = yaml.safe_load(f)
             
         dir_cfg = self.config['directories']
@@ -505,9 +505,7 @@ class AutomatedDetectorPipeline:
                 self.needs_export = True
                 
                 for key, val in current_metadata.items():
-                    if key not in self.metadata_history:
-                        self.metadata_history[key] = []
-                    self.metadata_history[key].append(val)
+                    self.metadata_history.setdefault(key, []).append(val)
             else:
                 self.logger.warning(f"Rejected {file_path.name} (R={corr:.3f})")
                 self.needs_export = True 
@@ -649,7 +647,7 @@ if __name__ == "__main__":
     existing_files = sorted([
         f for f in pipeline.watch_dir.iterdir() 
         if f.is_file() and f.suffix in valid_extensions and not f.name.startswith('.')
-    ])
+    ], key=lambda x: x.stat().st_mtime)
     
     if existing_files:
         for file_path in existing_files:
@@ -670,6 +668,7 @@ if __name__ == "__main__":
                 pipeline._export_data_and_plot(force=True)
                 
     except KeyboardInterrupt:
+        print("Shutting down pipeline.")
+    finally:
         observer.stop()
-        
-    observer.join()
+        observer.join()
