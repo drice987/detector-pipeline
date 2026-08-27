@@ -12,6 +12,9 @@ import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import argparse
+from typing import Any
+
+valid_extensions = {'.npy', '.h5', '.hdf5', '.sif','.tif','.tiff'}
 
 class DashboardRenderer:
     """Handles the rendering and exporting of pipeline visual dashboards."""
@@ -27,7 +30,8 @@ class DashboardRenderer:
         matplotlib.use('Agg')
 
     def render(self, data_1d: np.ndarray, data_2d: np.ndarray, n_scans: int, 
-               total_scans: int, correlation_history: list, data_1d_sem: np.ndarray = None):
+               total_scans: int, correlation_history: list[float], 
+               data_1d_sem: np.ndarray | None = None) -> None:
         """Generates and saves the pipeline dashboard."""
         
         fig = plt.figure(figsize=(10, 8))
@@ -102,7 +106,7 @@ class AutomatedDetectorPipeline:
     Live data reduction pipeline for 2D detectors.
     Handles background subtraction, alignment, and rolling statistics.
     """    
-    def __init__(self, config_path="config.yaml"):
+    def __init__(self, config_path: str | Path = "config.yaml") -> None:
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s | %(levelname)s | %(message)s',
@@ -192,7 +196,7 @@ class AutomatedDetectorPipeline:
             data[bad_mask] = safe_median
         return data
 
-    def _extract_metadata(self, hf: h5py.File) -> dict:
+    def _extract_metadata(self, hf: h5py.File) -> dict[str, Any]:
         """Extracts environmental/motor metadata from the HDF5 file."""
         extracted = {}
         if self.metadata_config == 'none':
@@ -212,7 +216,7 @@ class AutomatedDetectorPipeline:
             
         return extracted
 
-    def _initialize_dark(self):
+    def _initialize_dark(self) -> None:
         """Locates, cleans, and slices the master dark frame."""
         if not self.use_dark: return
         dark_path = self.watch_dir / self.dark_filename
@@ -252,7 +256,6 @@ class AutomatedDetectorPipeline:
                 
                 self.master_dark = self._remove_cosmic_rays(raw_dark[r_start:r_end, c_start:c_end])
                 self.processed_files.add(dark_path)
-                self.logger.info(f"Loaded and sliced master dark: {dark_path.name}")
                 
                 if self.integration_axis == 'vertical':
                     self.dark_1d = np.sum(self.master_dark, axis=0)
@@ -291,7 +294,7 @@ class AutomatedDetectorPipeline:
 
         return cleaned
 
-    def _find_elastic_params(self, profile: np.ndarray):
+    def _find_elastic_params(self, profile: np.ndarray) -> float:
         """Fits a 1D Gaussian to locate the spectral center of mass."""
         x = np.arange(len(profile))
         max_idx = np.argmax(profile)
@@ -337,7 +340,7 @@ class AutomatedDetectorPipeline:
             return float(c_guess_global)
 
     def _welford_update(self, raw_1d: np.ndarray, raw_2d: np.ndarray, 
-                        norm_1d: np.ndarray, norm_2d: np.ndarray, raw_intensity: float):
+                        norm_1d: np.ndarray, norm_2d: np.ndarray, raw_intensity: float) -> None:
         """Updates rolling statistics for both absolute and normalized tracks."""
         if self.n_valid_scans == 0:
             self.running_mean_raw = np.copy(raw_1d)
@@ -368,19 +371,20 @@ class AutomatedDetectorPipeline:
             delta_2d_norm = norm_2d - self.running_mean_2d_norm
             self.running_mean_2d_norm += delta_2d_norm / self.n_valid_scans
 
-    def _attempt_initialization(self):
+    def _attempt_initialization(self) -> None:
         """Processes the cold-start buffer and establishes the reference frame."""
-        self.logger.info("Sufficient files buffered...")
         n_scans = len(self.init_buffer_arrays)
         
         centers = [self._find_elastic_params(raw_1d) for raw_1d in self.init_buffer_arrays]
         self.reference_center = np.median(centers)
                 
-        for i in range(n_scans):
-            raw_1d = self.init_buffer_arrays[i]
-            raw_2d = self.init_buffer_arrays_2d[i]
-            i0_val = self.init_buffer_i0[i]
-            current_metadata = self.init_buffer_metadata[i]
+        for raw_1d, raw_2d, i0_val, current_metadata, intensity, file_name in zip(
+            self.init_buffer_arrays, 
+            self.init_buffer_arrays_2d, 
+            self.init_buffer_i0, 
+            self.init_buffer_metadata,
+            self.init_buffer_intensities,
+            self.init_buffer_files):
             
             c = self._find_elastic_params(raw_1d)
             shift_val = self.reference_center - c if self.alignment_mode == 'dynamic' else 0.0
@@ -399,8 +403,9 @@ class AutomatedDetectorPipeline:
             normed_1d = aligned_1d / norm_factor
             normed_2d = aligned_2d / norm_factor
             
-            self._welford_update(aligned_1d, aligned_2d, normed_1d, normed_2d, self.init_buffer_intensities[i])
-            self.logger.info(f"[INIT] {self.init_buffer_files[i]}")
+            # Now we use the unpacked variables instead of the [i] index
+            self._welford_update(aligned_1d, aligned_2d, normed_1d, normed_2d, intensity)
+            self.logger.info(f"[INIT] {file_name}")
             
             for key, val in current_metadata.items():
                 self.metadata_history.setdefault(key, []).append(val)
@@ -408,7 +413,7 @@ class AutomatedDetectorPipeline:
         self.is_initialized = True
         self.needs_export = True
 
-    def process_file(self, file_path: Path):
+    def process_file(self, file_path: Path) -> None:
         """Main processing loop for detector files."""
         if file_path.name == self.output_h5_name or file_path in self.processed_files:
             return
@@ -534,7 +539,7 @@ class AutomatedDetectorPipeline:
             
             time.sleep(self.file_poll_interval)
     
-    def _export_data_and_plot(self, force=False):
+    def _export_data_and_plot(self, force: bool = False) -> None:
         """Exports statistical objects to HDF5 and renders the visual dashboard."""
         if not self.is_initialized or self.n_valid_scans == 0: 
             return
@@ -595,9 +600,6 @@ class AutomatedDetectorPipeline:
                     self.logger.warning(f"Could not write HDF5 after {max_retries} attempts (file lock): {e}")
 
         #  Dashboard Rendering 
-        axis_mode = self.config['processing'].get('integration_axis', 'vertical')
-        corr_threshold = self.config.get('thresholds', {}).get('shape_correlation_min', 0.95)
-
         try:
             self.renderer.render(
                 data_1d=self.running_mean_norm,
@@ -613,11 +615,11 @@ class AutomatedDetectorPipeline:
         
 class DataFileHandler(FileSystemEventHandler):
     """Watchdog event handler to trigger processing upon file creation."""
-    def __init__(self, pipeline: AutomatedDetectorPipeline):
+    def __init__(self, pipeline: AutomatedDetectorPipeline) -> None:
         self.pipeline = pipeline
-        self.valid_extensions = {'.npy', '.h5', '.hdf5', '.sif','.tif','.tiff'}
+        self.valid_extensions = valid_extensions
 
-    def on_created(self, event):
+    def on_created(self, event: Any) -> None:
         if event.is_directory: return
         file_path = Path(event.src_path)
         if file_path.name.startswith('.'): return
@@ -643,8 +645,6 @@ if __name__ == "__main__":
 
     pipeline = AutomatedDetectorPipeline(config_path=args.config)
     
-    print(f"Checking {pipeline.watch_dir} for existing backlog...")
-    valid_extensions = {'.npy', '.h5', '.hdf5', '.sif','.tif','.tiff'}
     
     existing_files = sorted([
         f for f in pipeline.watch_dir.iterdir() 
@@ -660,7 +660,7 @@ if __name__ == "__main__":
     observer.schedule(event_handler, path=str(pipeline.watch_dir), recursive=False)
     observer.start()
     
-    print(f"Monitoring Directory: {pipeline.watch_dir} ... (Press Ctrl+C to stop)")
+    print(f"Monitoring: {pipeline.watch_dir} ... (Press Ctrl+C to stop)")
     
     try:
         while True:
@@ -671,6 +671,5 @@ if __name__ == "__main__":
                 
     except KeyboardInterrupt:
         observer.stop()
-        print("\nShutting down pipeline...")
         
     observer.join()
