@@ -101,6 +101,51 @@ class DashboardRenderer:
         fig.savefig(self.save_path, dpi=150, bbox_inches='tight')
         plt.close(fig)
 
+def read_detector_file(file_path: Path, config: dict[str, Any]) -> tuple[np.ndarray, float | None, dict[str, Any]]:
+    """Parses various detector formats into a standard 2D array and extracts metadata."""
+    i0_val = None
+    metadata = {}
+    
+    if file_path.suffix == '.sif':
+        import sif_parser
+        data, _ = sif_parser.np_open(str(file_path))
+        raw_2d = np.mean(data, axis=0) if data.shape[0] > 1 else data[0]
+        raw_2d = raw_2d.astype(np.float64)
+        
+    elif file_path.suffix == '.npy':
+        raw_2d = np.load(str(file_path)).astype(np.float64)
+        
+    elif file_path.suffix in ['.tif', '.tiff']:
+        import tifffile
+        raw_2d = tifffile.imread(str(file_path)).astype(np.float64)
+        if raw_2d.ndim > 2:
+            raw_2d = np.mean(raw_2d, axis=0)
+            
+    elif file_path.suffix in ['.h5', '.hdf5']:
+        h5_path = config.get('processing', {}).get('h5_data_path', 'entry/data/counts')
+        i0_path = config.get('processing', {}).get('h5_i0_path', None)
+        
+        with h5py.File(file_path, 'r') as hf:
+            raw_2d = hf[h5_path][:].astype(np.float64)
+            if i0_path and i0_path in hf:
+                i0_val = float(np.mean(hf[i0_path][()]))
+            
+            meta_cfg = config.get('export', {}).get('metadata_paths', 'none')
+            if meta_cfg != 'none':
+                if isinstance(meta_cfg, list):
+                    for path in meta_cfg:
+                        if path in hf:
+                            metadata[path] = hf[path][()]
+                elif meta_cfg == 'all':
+                    def safe_visitor(name: str, node: Any) -> None:
+                        if isinstance(node, h5py.Dataset) and node.size < 100:
+                            metadata[name] = node[()]
+                    hf.visititems(safe_visitor)
+    else:
+        raise ValueError(f"Unsupported file extension: {file_path.suffix}")
+        
+    return raw_2d, i0_val, metadata
+
 class AutomatedDetectorPipeline:
     """
     Live data reduction pipeline for 2D detectors.
@@ -196,26 +241,6 @@ class AutomatedDetectorPipeline:
             data[bad_mask] = safe_median
         return data
 
-    def _extract_metadata(self, hf: h5py.File) -> dict[str, Any]:
-        """Extracts environmental/motor metadata from the HDF5 file."""
-        extracted = {}
-        if self.metadata_config == 'none':
-            return extracted
-            
-        if isinstance(self.metadata_config, list):
-            for path in self.metadata_config:
-                if path in hf:
-                    extracted[path] = hf[path][()]
-                    
-        elif self.metadata_config == 'all':
-            def safe_visitor(name, node):
-                if isinstance(node, h5py.Dataset):
-                    if node.size < 100: 
-                        extracted[name] = node[()]
-            hf.visititems(safe_visitor)
-            
-        return extracted
-
     def _initialize_dark(self) -> None:
         """Locates, cleans, and slices the master dark frame."""
         if not self.use_dark: return
@@ -223,47 +248,23 @@ class AutomatedDetectorPipeline:
         
         if dark_path.is_file():
             try:
-                if dark_path.suffix == '.sif':
-                    try:
-                        import sif_parser
-                        data, _ = sif_parser.np_open(str(dark_path))
-                        raw_dark = np.mean(data, axis=0) if data.shape[0] > 1 else data[0]
-                    except ImportError:
-                        self.logger.error(f"Cannot process {file_path.name}: 'sif_parser' is not installed.")
-                        return
-                elif dark_path.suffix == '.npy':
-                    raw_dark = np.load(str(dark_path))
-                elif dark_path.suffix in ['.h5', '.hdf5']:
-                    h5_path = self.config.get('processing', {}).get('h5_data_path', 'entry/data/counts')
-                    with h5py.File(dark_path, 'r') as hf:
-                        raw_dark = hf[h5_path][:].astype(np.float64)
-                elif dark_path.suffix in ['.tif', '.tiff']:
-                    try:
-                        import tifffile
-                        raw_dark = tifffile.imread(str(dark_path)).astype(np.float64)
-                        if raw_dark.ndim > 2:
-                            raw_dark = np.mean(raw_dark, axis=0)
-                    except ImportError:
-                        self.logger.error(f"Cannot load dark {dark_path.name}: 'tifffile' is not installed.")
-                        return
-                else:
-                    return
-
-                raw_dark = self._clean_data(raw_dark)
-                
-                r_start, r_end = self.config['processing'].get('row_bounds', [0, raw_dark.shape[0]])
-                c_start, c_end = self.config['processing'].get('col_bounds', [0, raw_dark.shape[1]])
-                
-                self.master_dark = self._remove_cosmic_rays(raw_dark[r_start:r_end, c_start:c_end])
-                self.processed_files.add(dark_path)
-                
-                if self.integration_axis == 'vertical':
-                    self.dark_1d = np.sum(self.master_dark, axis=0)
-                else:
-                    self.dark_1d = np.sum(self.master_dark, axis=1)
-                    
-            except Exception as e:
+                raw_dark, _, _ = read_detector_file(dark_path, self.config)
+            except (ImportError, OSError, KeyError, ValueError) as e:
                 self.logger.error(f"Dark frame load failed for ({dark_path.name}): {e}")
+                return
+                
+            raw_dark = self._clean_data(raw_dark)
+            
+            r_start, r_end = self.config['processing'].get('row_bounds', [0, raw_dark.shape[0]])
+            c_start, c_end = self.config['processing'].get('col_bounds', [0, raw_dark.shape[1]])
+            
+            self.master_dark = self._remove_cosmic_rays(raw_dark[r_start:r_end, c_start:c_end])
+            self.processed_files.add(dark_path)
+            
+            if self.integration_axis == 'vertical':
+                self.dark_1d = np.sum(self.master_dark, axis=0)
+            else:
+                self.dark_1d = np.sum(self.master_dark, axis=1)
 
     def _remove_cosmic_rays(self, z_grid: np.ndarray) -> np.ndarray:
         """
@@ -426,26 +427,7 @@ class AutomatedDetectorPipeline:
         current_metadata = {}
         
         try:
-            if file_path.suffix == '.sif':
-                import sif_parser
-                data, _ = sif_parser.np_open(str(file_path))
-                raw_2d = np.mean(data, axis=0) if data.shape[0] > 1 else data[0]
-                raw_2d = raw_2d.astype(np.float64)
-            elif file_path.suffix == '.npy':
-                raw_2d = np.load(str(file_path)).astype(np.float64)
-            elif file_path.suffix in ['.tif', '.tiff']:
-                import tifffile
-                raw_2d = tifffile.imread(str(file_path)).astype(np.float64)
-            elif file_path.suffix in ['.h5', '.hdf5']:
-                h5_path = self.config.get('processing', {}).get('h5_data_path', 'entry/data/counts')
-                i0_path = self.config.get('processing', {}).get('h5_i0_path', None)
-                with h5py.File(file_path, 'r') as hf:
-                    raw_2d = hf[h5_path][:].astype(np.float64)
-                    if i0_path and i0_path in hf:
-                        i0_val = float(np.mean(hf[i0_path][()]))
-                    current_metadata = self._extract_metadata(hf)
-            else:
-                return
+            raw_2d, i0_val, current_metadata = read_detector_file(file_path, self.config)
         except (ImportError, OSError, KeyError, ValueError) as e:
             self.logger.error(f"Failed to read {file_path.name}: {e}")
             return
