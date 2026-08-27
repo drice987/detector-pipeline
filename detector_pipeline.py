@@ -146,6 +146,103 @@ def read_detector_file(file_path: Path, config: dict[str, Any]) -> tuple[np.ndar
         
     return raw_2d, i0_val, metadata
 
+class WelfordRollingStats:
+    """Tracks rolling means and variance using Welford's algorithm."""
+    def __init__(self) -> None:
+        self.n_scans = 0
+        self.mean_intensity = 0.0
+        
+        self.mean_1d_raw: np.ndarray | None = None
+        self.m2_1d_raw: np.ndarray | None = None
+        self.mean_2d_raw: np.ndarray | None = None
+        
+        self.mean_1d_norm: np.ndarray | None = None
+        self.m2_1d_norm: np.ndarray | None = None
+        self.mean_2d_norm: np.ndarray | None = None
+
+    def update(self, raw_1d: np.ndarray, raw_2d: np.ndarray, norm_1d: np.ndarray, norm_2d: np.ndarray, intensity: float) -> None:
+        """Updates rolling statistics for both absolute and normalized tracks."""
+        if self.n_scans == 0:
+            self.mean_1d_raw = np.copy(raw_1d)
+            self.m2_1d_raw = np.zeros_like(raw_1d)
+            self.mean_2d_raw = np.copy(raw_2d)
+            
+            self.mean_1d_norm = np.copy(norm_1d)
+            self.m2_1d_norm = np.zeros_like(norm_1d)
+            self.mean_2d_norm = np.copy(norm_2d)
+            
+            self.mean_intensity = intensity
+            self.n_scans = 1
+        else:
+            self.n_scans += 1
+            self.mean_intensity += (intensity - self.mean_intensity) / self.n_scans
+            
+            # Raw Math
+            delta_raw = raw_1d - self.mean_1d_raw
+            self.mean_1d_raw += delta_raw / self.n_scans
+            self.m2_1d_raw += delta_raw * (raw_1d - self.mean_1d_raw)
+            self.mean_2d_raw += (raw_2d - self.mean_2d_raw) / self.n_scans
+            
+            # Normalized Math
+            delta_norm = norm_1d - self.mean_1d_norm
+            self.mean_1d_norm += delta_norm / self.n_scans
+            self.m2_1d_norm += delta_norm * (norm_1d - self.mean_1d_norm)
+            self.mean_2d_norm += (norm_2d - self.mean_2d_norm) / self.n_scans
+
+    def get_sem(self) -> tuple[np.ndarray, np.ndarray]:
+        """Returns the Standard Error of the Mean for (raw, normalized) 1D arrays."""
+        if self.n_scans > 1:
+            var_raw = self.m2_1d_raw / (self.n_scans - 1)
+            sem_raw = np.sqrt(var_raw / self.n_scans)
+            
+            var_norm = self.m2_1d_norm / (self.n_scans - 1)
+            sem_norm = np.sqrt(var_norm / self.n_scans)
+            return sem_raw, sem_norm
+        
+        return np.zeros_like(self.mean_1d_raw), np.zeros_like(self.mean_1d_norm)
+
+class EMAStats:
+    """Tracks Exponential Moving Average (EMA) to prioritize recent scans."""
+    def __init__(self, alpha: float = 0.1) -> None:
+        self.alpha = alpha 
+        self.n_scans = 0
+        self.mean_intensity = 0.0
+        
+        self.mean_1d_raw: np.ndarray | None = None
+        self.var_1d_raw: np.ndarray | None = None
+        self.mean_2d_raw: np.ndarray | None = None
+        
+        self.mean_1d_norm: np.ndarray | None = None
+        self.var_1d_norm: np.ndarray | None = None
+        self.mean_2d_norm: np.ndarray | None = None
+
+    def update(self, raw_1d: np.ndarray, raw_2d: np.ndarray, norm_1d: np.ndarray, norm_2d: np.ndarray, intensity: float) -> None:
+        if self.n_scans == 0:
+            self.mean_1d_raw, self.var_1d_raw = np.copy(raw_1d), np.zeros_like(raw_1d)
+            self.mean_2d_raw = np.copy(raw_2d)
+            self.mean_1d_norm, self.var_1d_norm = np.copy(norm_1d), np.zeros_like(norm_1d)
+            self.mean_2d_norm = np.copy(norm_2d)
+            self.mean_intensity = intensity
+            self.n_scans = 1
+        else:
+            self.n_scans += 1
+            self.mean_intensity += self.alpha * (intensity - self.mean_intensity)
+            
+            diff_raw = raw_1d - self.mean_1d_raw
+            self.mean_1d_raw += self.alpha * diff_raw
+            self.var_1d_raw = (1 - self.alpha) * (self.var_1d_raw + self.alpha * diff_raw**2)
+            self.mean_2d_raw += self.alpha * (raw_2d - self.mean_2d_raw)
+            
+            diff_norm = norm_1d - self.mean_1d_norm
+            self.mean_1d_norm += self.alpha * diff_norm
+            self.var_1d_norm = (1 - self.alpha) * (self.var_1d_norm + self.alpha * diff_norm**2)
+            self.mean_2d_norm += self.alpha * (norm_2d - self.mean_2d_norm)
+
+    def get_sem(self) -> tuple[np.ndarray, np.ndarray]:
+        if self.n_scans > 1:
+            return np.sqrt(self.var_1d_raw), np.sqrt(self.var_1d_norm)
+        return np.zeros_like(self.mean_1d_raw), np.zeros_like(self.mean_1d_norm)
+    
 class AutomatedDetectorPipeline:
     """
     Live data reduction pipeline for 2D detectors.
@@ -197,19 +294,16 @@ class AutomatedDetectorPipeline:
         self.init_buffer_metadata = []
         
         # Rolling stats
-        self.n_valid_scans = 0
         self.n_total_scans = 0
         self.correlation_history = []
-        
-        self.running_mean_raw = None
-        self.running_M2_raw = None
-        self.running_mean_2d_raw = None
-        
-        self.running_mean_norm = None
-        self.running_M2_norm = None
-        self.running_mean_2d_norm = None
-        
-        self.running_raw_intensity = 0.0
+        method = proc_cfg.get('statistics_method','welford').lower()
+        if method == 'welford':
+            self.stats = WelfordRollingStats()
+        elif method == 'ema':
+            alpha = proc_cfg.get('ema_alpha', 0.1)
+            self.stats = EMAStats(alpha=alpha)
+        else:
+            raise ValueError(f'Unknown statistics_method: {method}')
         
         # QA and metadata
         self.track_integrity = qa_cfg.get('enable_integrity_tracking', True)
@@ -340,38 +434,6 @@ class AutomatedDetectorPipeline:
         except RuntimeError:
             return float(c_guess_global)
 
-    def _welford_update(self, raw_1d: np.ndarray, raw_2d: np.ndarray, 
-                        norm_1d: np.ndarray, norm_2d: np.ndarray, raw_intensity: float) -> None:
-        """Updates rolling statistics for both absolute and normalized tracks."""
-        if self.n_valid_scans == 0:
-            self.running_mean_raw = np.copy(raw_1d)
-            self.running_M2_raw = np.zeros_like(raw_1d)
-            self.running_mean_2d_raw = np.copy(raw_2d)
-            
-            self.running_mean_norm = np.copy(norm_1d)
-            self.running_M2_norm = np.zeros_like(norm_1d)
-            self.running_mean_2d_norm = np.copy(norm_2d)
-            
-            self.running_raw_intensity = raw_intensity
-            self.n_valid_scans = 1
-        else:
-            self.n_valid_scans += 1
-            self.running_raw_intensity += (raw_intensity - self.running_raw_intensity) / self.n_valid_scans
-            
-            # Math
-            delta_raw = raw_1d - self.running_mean_raw
-            self.running_mean_raw += delta_raw / self.n_valid_scans
-            self.running_M2_raw += delta_raw * (raw_1d - self.running_mean_raw)
-            delta_2d_raw = raw_2d - self.running_mean_2d_raw
-            self.running_mean_2d_raw += delta_2d_raw / self.n_valid_scans
-            
-            # Normalized Math
-            delta_norm = norm_1d - self.running_mean_norm
-            self.running_mean_norm += delta_norm / self.n_valid_scans
-            self.running_M2_norm += delta_norm * (norm_1d - self.running_mean_norm)
-            delta_2d_norm = norm_2d - self.running_mean_2d_norm
-            self.running_mean_2d_norm += delta_2d_norm / self.n_valid_scans
-
     def _attempt_initialization(self) -> None:
         """Processes the cold-start buffer and establishes the reference frame."""
         n_scans = len(self.init_buffer_arrays)
@@ -405,7 +467,7 @@ class AutomatedDetectorPipeline:
             normed_2d = aligned_2d / norm_factor
             
             # Now we use the unpacked variables instead of the [i] index
-            self._welford_update(aligned_1d, aligned_2d, normed_1d, normed_2d, intensity)
+            self.stats.update(aligned_1d, aligned_2d, normed_1d, normed_2d, intensity)
             self.logger.info(f"[INIT] {file_name}")
             
             for key, val in current_metadata.items():
@@ -413,6 +475,9 @@ class AutomatedDetectorPipeline:
             
         self.is_initialized = True
         self.needs_export = True
+
+        self.init_buffer_arrays.clear()
+        self.init_buffer_arrays_2d.clear()
 
     def process_file(self, file_path: Path) -> None:
         """Main processing loop for detector files."""
@@ -473,7 +538,7 @@ class AutomatedDetectorPipeline:
             normed_1d = aligned_1d / norm_factor
             normed_2d = aligned_2d / norm_factor
             
-            corr = np.corrcoef(normed_1d, self.running_mean_norm)[0, 1]
+            corr = np.corrcoef(normed_1d, self.stats.mean_1d_norm)[0, 1]
             self.correlation_history.append(corr)
 
             if self.track_integrity:
@@ -482,7 +547,7 @@ class AutomatedDetectorPipeline:
                     self.qa_R.pop(0)
 
             if corr > self.config['thresholds']['shape_correlation_min']:
-                self._welford_update(aligned_1d, aligned_2d, normed_1d, normed_2d, current_raw_int)
+                self.stats.update(aligned_1d, aligned_2d, normed_1d, normed_2d, current_raw_int)
                 self.logger.info(f"Accepted {file_path.name} (R={corr:.3f})")
                 self.needs_export = True
                 
@@ -521,7 +586,7 @@ class AutomatedDetectorPipeline:
     
     def _export_data_and_plot(self, force: bool = False) -> None:
         """Exports statistical objects to HDF5 and renders the visual dashboard."""
-        if not self.is_initialized or self.n_valid_scans == 0: 
+        if not self.is_initialized or self.stats.n_scans == 0: 
             return
         
         current_time = time.time()
@@ -531,17 +596,8 @@ class AutomatedDetectorPipeline:
         self.last_export_time = current_time
         self.needs_export = False 
 
-        if self.n_valid_scans > 1:
-            var_raw = self.running_M2_raw / (self.n_valid_scans - 1)
-            sem_raw = np.sqrt(var_raw / self.n_valid_scans)
-            
-            var_norm = self.running_M2_norm / (self.n_valid_scans - 1)
-            sem_norm = np.sqrt(var_norm / self.n_valid_scans)
-        else:
-            sem_raw = np.zeros_like(self.running_mean_raw)
-            sem_norm = np.zeros_like(self.running_mean_norm)
-
-        pixels = np.arange(len(self.running_mean_raw))
+        sem_raw, sem_norm = self.stats.get_sem()
+        pixels = np.arange(len(self.stats.mean_1d_raw))
 
         h5_path = self.watch_dir / self.output_h5_name
         max_retries = 3
@@ -551,18 +607,18 @@ class AutomatedDetectorPipeline:
                 with h5py.File(h5_path, 'w') as hf:
                     hf.create_dataset('energy_axis_pixels', data=pixels)
                     
-                    hf.create_dataset('raw_intensity', data=self.running_mean_raw)
+                    hf.create_dataset('raw_intensity', data=self.stats.mean_1d_raw)
                     hf.create_dataset('raw_uncertainty_sem', data=sem_raw)
-                    hf.create_dataset('raw_2d_roi', data=self.running_mean_2d_raw, compression="gzip")
+                    hf.create_dataset('raw_2d_roi', data=self.stats.mean_2d_raw, compression="gzip")
                     
-                    hf.create_dataset('normalized_intensity', data=self.running_mean_norm)
+                    hf.create_dataset('normalized_intensity', data=self.stats.mean_1d_norm)
                     hf.create_dataset('normalized_uncertainty_sem', data=sem_norm)
-                    hf.create_dataset('normalized_2d_roi', data=self.running_mean_2d_norm, compression="gzip")
+                    hf.create_dataset('normalized_2d_roi', data=self.stats.mean_2d_norm, compression="gzip")
                     
                     if self.dark_1d is not None:
                         hf.create_dataset('integrated_dark_1d', data=self.dark_1d)
                         
-                    hf.attrs['scans_integrated'] = self.n_valid_scans
+                    hf.attrs['scans_integrated'] = self.stats.n_scans
                     hf.attrs['scans_total_attempted'] = self.n_total_scans
                     
                     if self.metadata_history:
@@ -579,12 +635,12 @@ class AutomatedDetectorPipeline:
                 else:
                     self.logger.warning(f"Could not write HDF5 after {max_retries} attempts (file lock): {e}")
 
-        #  Dashboard Rendering 
+        # Dashboard Rendering 
         try:
             self.renderer.render(
-                data_1d=self.running_mean_norm,
-                data_2d=self.running_mean_2d_norm,
-                n_scans=self.n_valid_scans,
+                data_1d=self.stats.mean_1d_norm,
+                data_2d=self.stats.mean_2d_norm,
+                n_scans=self.stats.n_scans,
                 total_scans=self.n_total_scans,
                 correlation_history=self.qa_R,
                 data_1d_sem=sem_norm
@@ -639,14 +695,12 @@ if __name__ == "__main__":
     observer = Observer()
     observer.schedule(event_handler, path=str(pipeline.watch_dir), recursive=False)
     observer.start()
-    
-    print(f"Monitoring: {pipeline.watch_dir} ... (Press Ctrl+C to stop)")
-    
+
+    print(f"Monitoring Directory: {pipeline.watch_dir} ... (Press Ctrl+C to stop)") 
     try:
         while True:
             time.sleep(1)
             if pipeline.needs_export and (time.time() - pipeline.last_export_time) > 1.0:
-                pipeline.logger.info("Pipeline idle. Flushing final dashboard frame...")
                 pipeline._export_data_and_plot(force=True)
                 
     except KeyboardInterrupt:
