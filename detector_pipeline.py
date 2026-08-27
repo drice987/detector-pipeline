@@ -12,25 +12,103 @@ import matplotlib
 import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 
-__version__ = "1.0.0"
+class DashboardRenderer:
+    """Handles the rendering and exporting of pipeline visual dashboards."""
+    
+    def __init__(self, config: dict, watch_dir: Path):
+        self.integration_axis = config['processing'].get('integration_axis', 'vertical')
+        self.corr_threshold = config.get('thresholds', {}).get('shape_correlation_min', 0.95)
+        
+        output_dash_name = config.get('export', {}).get('output_dashboard_filename', 'PIPELINE_DASHBOARD.png')
+        self.save_path = watch_dir / output_dash_name
+        self.title = "Pipeline Dashboard"
+        
+        matplotlib.use('Agg')
+
+    def render(self, data_1d: np.ndarray, data_2d: np.ndarray, n_scans: int, 
+               total_scans: int, correlation_history: list, data_1d_sem: np.ndarray = None):
+        """Generates and saves the pipeline dashboard."""
+        
+        fig = plt.figure(figsize=(10, 8))
+        current_title = f"{self.title} | Scans: {n_scans}"
+
+        has_qa = correlation_history is not None and len(correlation_history) > 0
+        
+        if has_qa:
+            gs_main = gridspec.GridSpec(2, 1, height_ratios=[2, 0.7], hspace=0.3)
+            gs_spectra = gridspec.GridSpecFromSubplotSpec(
+                2, 2, subplot_spec=gs_main[0], 
+                height_ratios=[1, 1], width_ratios=[1, 0.03], 
+                hspace=0.0, wspace=0.02
+            )
+            ax3 = fig.add_subplot(gs_main[1])
+        else:
+            gs_spectra = gridspec.GridSpec(2, 2, width_ratios=[1, 0.03], hspace=0.0, wspace=0.02)
+
+        # 1D Spectrum
+        ax1 = fig.add_subplot(gs_spectra[0, 0])
+        ax1.plot(data_1d, color='blue')
+        if data_1d_sem is not None:
+            x_vals = np.arange(len(data_1d))
+            ax1.fill_between(x_vals, 
+                            data_1d - 2*data_1d_sem, 
+                            data_1d + 2*data_1d_sem, 
+                            color='blue', alpha=0.3, label="2σ SEM")
+            ax1.legend(loc="upper right")
+        ax1.set_title(current_title, fontsize=14, pad=15)
+        ax1.set_ylabel("Normalized Intensity")
+        ax1.grid(True, alpha=0.3)
+        plt.setp(ax1.get_xticklabels(), visible=False)
+
+        # 2D
+        ax2 = fig.add_subplot(gs_spectra[1, 0], sharex=ax1)
+        if self.integration_axis == 'vertical':
+            im = ax2.imshow(data_2d, aspect='auto', cmap='magma', origin='lower')
+        else:
+            im = ax2.imshow(data_2d.T, aspect='auto', cmap='magma', origin='lower')
+            
+        ax2.set_xlabel("Dispersive Axis")
+        ax2.set_ylabel("Spatial Axis")
+
+        cax = fig.add_subplot(gs_spectra[1, 1])
+        plt.colorbar(im, cax=cax, label='Normalized Intensity')
+
+        # QA
+        if has_qa:
+            corr_arr = np.array(correlation_history)
+            end_scan = total_scans if total_scans else len(corr_arr)
+            start_scan = max(1, end_scan - len(corr_arr) + 1)
+            scans = np.arange(start_scan, end_scan + 1)
+                       
+            accepted = corr_arr > self.corr_threshold
+            rejected = corr_arr <= self.corr_threshold
+            
+            if np.any(accepted):
+                ax3.scatter(scans[accepted], corr_arr[accepted], color='blue', marker='.', s=30, label="Accepted")
+            if np.any(rejected):
+                ax3.scatter(scans[rejected], corr_arr[rejected], color='red', marker='x', s=20, label="Rejected")
+            
+            ax3.set_title("Sample Health (Pearson Correlation)")
+            ax3.set_ylabel("R-Value")
+            ax3.set_xlabel("Scan Number")
+            ax3.set_ylim(min(corr_arr) - 0.05, max(corr_arr) + 0.05)
+
+        fig.savefig(self.save_path, dpi=150, bbox_inches='tight')
+        plt.close(fig)
 
 class AutomatedDetectorPipeline:
     """
-    Real-time data reduction pipeline for 2D detectors.
-    Features include sparse despiking, sub-pixel alignment, scale-invariant 
-    shape tracking, and parallel Welford statistics for absolute and normalized intensities.
-    """
-    
+    Live data reduction pipeline for 2D detectors.
+    Handles background subtraction, alignment, and rolling statistics.
+    """    
     def __init__(self, config_path="config.yaml"):
-        # --- Logging Setup ---
         logging.basicConfig(
             level=logging.INFO,
             format='%(asctime)s | %(levelname)s | %(message)s',
-            handlers=[logging.FileHandler("pipeline_operations.log"), logging.StreamHandler()]
+            handlers=[logging.FileHandler("pipeline.log"), logging.StreamHandler()]
         )
         self.logger = logging.getLogger(__name__)
         
-        # --- Configuration ---
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
             
@@ -38,14 +116,14 @@ class AutomatedDetectorPipeline:
         self.watch_dir.mkdir(exist_ok=True)
         self.processed_files = set()
         
-        # --- Pipeline Parameters ---
+        # Pipeline Parameters
         self.integration_axis = self.config['processing'].get('integration_axis', 'vertical')
         self.use_dark = self.config['directories'].get('use_dark', False)
         self.dark_filename = self.config['directories'].get('dark_filename', 'dark_background.h5')
         self.min_init_scans = self.config['initialization'].get('min_init_scans', 3)
         self.alignment_mode = self.config['processing'].get('alignment_mode', 'dynamic')
         
-        # --- State Machine & Buffers ---
+        # State and Buffers
         self.is_initialized = False
         self.reference_center = 0.0
         
@@ -56,7 +134,7 @@ class AutomatedDetectorPipeline:
         self.init_buffer_i0 = []
         self.init_buffer_metadata = []
         
-        # --- Statistical Analysis (Parallel) ---
+        # Rolling stats
         self.n_valid_scans = 0
         self.n_total_scans = 0
         self.correlation_history = []
@@ -71,23 +149,24 @@ class AutomatedDetectorPipeline:
         
         self.running_raw_intensity = 0.0
         
-        # --- QA & Metadata ---
+        # QA and metadata
         self.track_integrity = self.config.get('qa', {}).get('enable_integrity_tracking', True)
         self.integrity_window = self.config.get('qa', {}).get('rolling_window_size', 200)
         self.qa_R = []
-        
         self.metadata_config = self.config.get('export', {}).get('metadata_paths', 'none')
         self.metadata_history = {}
         
-        # --- Export Control ---
+        # Export control
         self.export_throttle = self.config.get('export', {}).get('throttle_sec', 0.5)
         self.file_poll_interval = self.config.get('directories', {}).get('poll_interval_sec', 0.01)
+        self.file_timeout = self.config.get('directories', {}).get('file_timeout_sec', 10.0)
         self.output_h5_name = self.config.get('export', {}).get('output_h5_filename', 'CURRENT_AVERAGE.h5')
-        self.output_dash_name = self.config.get('export', {}).get('output_dashboard_filename', 'PIPELINE_DASHBOARD.png')
         self.last_export_time = 0.0
         self.needs_export = False
         
-        # --- Hardware Calibration ---
+        self.renderer = DashboardRenderer(self.config, self.watch_dir)
+        
+        # Hardware Calibration
         self.master_dark = None
         self.dark_1d = None
         self._initialize_dark()
@@ -116,7 +195,6 @@ class AutomatedDetectorPipeline:
         elif self.metadata_config == 'all':
             def safe_visitor(name, node):
                 if isinstance(node, h5py.Dataset):
-                    # Safety to prevent loading large arrays as metadata
                     if node.size < 100: 
                         extracted[name] = node[()]
             hf.visititems(safe_visitor)
@@ -171,7 +249,7 @@ class AutomatedDetectorPipeline:
                     self.dark_1d = np.sum(self.master_dark, axis=1)
                     
             except Exception as e:
-                self.logger.error(f"Failed to load dark ({dark_path.name}): {e}")
+                self.logger.error(f"Dark frame load failed for ({dark_path.name}): {e}")
 
     def _remove_cosmic_rays(self, z_grid: np.ndarray) -> np.ndarray:
         """
@@ -264,7 +342,7 @@ class AutomatedDetectorPipeline:
             self.n_valid_scans += 1
             self.running_raw_intensity += (raw_intensity - self.running_raw_intensity) / self.n_valid_scans
             
-            # Raw Math
+            # Math
             delta_raw = raw_1d - self.running_mean_raw
             self.running_mean_raw += delta_raw / self.n_valid_scans
             self.running_M2_raw += delta_raw * (raw_1d - self.running_mean_raw)
@@ -307,19 +385,15 @@ class AutomatedDetectorPipeline:
                 shift_2d_vec = [0, shift_val] if self.integration_axis == 'vertical' else [shift_val, 0]
                 aligned_2d = shift(raw_2d, shift_2d_vec, mode='nearest', order=1)
             
-            if i0_val is not None and i0_val > 0.0:
-                safe_denominator = i0_val
-            else:
-                total_area = np.sum(aligned_1d)
-                safe_denominator = total_area if total_area != 0 else 1e-8 
+            norm_factor = i0_val if (i0_val is not None and i0_val > 0) else np.sum(aligned_1d)
+            norm_factor = max(norm_factor, 1e-8)
             
-            normed_1d = aligned_1d / safe_denominator
-            normed_2d = aligned_2d / safe_denominator
+            normed_1d = aligned_1d / norm_factor
+            normed_2d = aligned_2d / norm_factor
             
             self._welford_update(aligned_1d, aligned_2d, normed_1d, normed_2d, self.init_buffer_intensities[i])
             self.logger.info(f"[INIT] {self.init_buffer_files[i]}")
             
-            # Archive metadata for initialization scans
             for key, val in current_metadata.items():
                 if key not in self.metadata_history:
                     self.metadata_history[key] = []
@@ -330,35 +404,27 @@ class AutomatedDetectorPipeline:
 
     def process_file(self, file_path: Path):
         """Main processing loop for detector files."""
-        if file_path.name == self.output_h5_name: return
-        if file_path in self.processed_files: return
+        if file_path.name == self.output_h5_name or file_path in self.processed_files:
+            return
         
         self.n_total_scans += 1
-        if not self._wait_for_write_completion(file_path): return
+        if not self._wait_for_write_completion(file_path):
+            return
 
+        i0_val = None
+        current_metadata = {}
+        
         try:
-            i0_val = None
-            current_metadata = {}
-            
-            # Read File
             if file_path.suffix == '.sif':
-                try:
-                    import sif_parser
-                    data, _ = sif_parser.np_open(str(file_path))
-                    raw_2d = np.mean(data, axis=0) if data.shape[0] > 1 else data[0]
-                    raw_2d = raw_2d.astype(np.float64)
-                except ImportError:
-                    self.logger.error(f"Cannot process {file_path.name}: 'sif_parser' is not installed.")
-                    return
+                import sif_parser
+                data, _ = sif_parser.np_open(str(file_path))
+                raw_2d = np.mean(data, axis=0) if data.shape[0] > 1 else data[0]
+                raw_2d = raw_2d.astype(np.float64)
             elif file_path.suffix == '.npy':
                 raw_2d = np.load(str(file_path)).astype(np.float64)
             elif file_path.suffix in ['.tif', '.tiff']:
-                try:
-                    import tifffile
-                    raw_2d = tifffile.imread(str(file_path)).astype(np.float64)
-                except ImportError:
-                    self.logger.error(f"Cannot process {file_path.name}: 'tifffile' is not installed.")
-                    return
+                import tifffile
+                raw_2d = tifffile.imread(str(file_path)).astype(np.float64)
             elif file_path.suffix in ['.h5', '.hdf5']:
                 h5_path = self.config.get('processing', {}).get('h5_data_path', 'entry/data/counts')
                 i0_path = self.config.get('processing', {}).get('h5_i0_path', None)
@@ -369,83 +435,85 @@ class AutomatedDetectorPipeline:
                     current_metadata = self._extract_metadata(hf)
             else:
                 return
+        except (ImportError, OSError, KeyError, ValueError) as e:
+            self.logger.error(f"Failed to read {file_path.name}: {e}")
+            return
                 
-            raw_2d = self._clean_data(raw_2d)
+        raw_2d = self._clean_data(raw_2d)
+        
+        r_start, r_end = self.config['processing'].get('row_bounds', [0, raw_2d.shape[0]])
+        c_start, c_end = self.config['processing'].get('col_bounds', [0, raw_2d.shape[1]])
+        grid = raw_2d[r_start:r_end, c_start:c_end]
+        current_raw_int = np.sum(grid)
+        
+        if self.master_dark is not None:
+            grid = grid - self.master_dark
             
-            # Application of Bounds & Background Subtraction
-            r_start, r_end = self.config['processing'].get('row_bounds', [0, raw_2d.shape[0]])
-            c_start, c_end = self.config['processing'].get('col_bounds', [0, raw_2d.shape[1]])
-            grid = raw_2d[r_start:r_end, c_start:c_end]
-            current_raw_int = np.sum(grid)
-            
-            if self.master_dark is not None:
-                grid = grid - self.master_dark
-            clean_grid = self._remove_cosmic_rays(grid)
-            
-            raw_1d = np.sum(clean_grid, axis=0) if self.integration_axis == 'vertical' else np.sum(clean_grid, axis=1)
+        clean_grid = self._remove_cosmic_rays(grid)
+        raw_1d = np.sum(clean_grid, axis=0) if self.integration_axis == 'vertical' else np.sum(clean_grid, axis=1)
 
-            # Route to Buffer or Main 
-            if not self.is_initialized:
-                self.init_buffer_arrays.append(raw_1d)
-                self.init_buffer_arrays_2d.append(clean_grid)
-                self.init_buffer_intensities.append(current_raw_int)
-                self.init_buffer_files.append(file_path.name)
-                self.init_buffer_i0.append(i0_val)
-                self.init_buffer_metadata.append(current_metadata)
-                
-                if len(self.init_buffer_arrays) == self.min_init_scans: 
-                    self._attempt_initialization()
+        if not self.is_initialized:
+            self.init_buffer_arrays.append(raw_1d)
+            self.init_buffer_arrays_2d.append(clean_grid)
+            self.init_buffer_intensities.append(current_raw_int)
+            self.init_buffer_files.append(file_path.name)
+            self.init_buffer_i0.append(i0_val)
+            self.init_buffer_metadata.append(current_metadata)
+            
+            if len(self.init_buffer_arrays) >= self.min_init_scans: 
+                self._attempt_initialization()
+        else:
+            c, _, _, _ = self._find_elastic_params(raw_1d)
+            shift_val = self.reference_center - c if self.alignment_mode == 'dynamic' else 0.0
+            
+            if shift_val == 0.0:
+                aligned_1d = raw_1d
+                aligned_2d = clean_grid
             else:
-                c, _, _, _ = self._find_elastic_params(raw_1d)
-                shift_val = self.reference_center - c if self.alignment_mode == 'dynamic' else 0.0
-                
-                if shift_val == 0.0:
-                    aligned_1d = raw_1d
-                    aligned_2d = clean_grid
-                else:
-                    aligned_1d = shift(raw_1d, shift_val, mode='nearest', order=1)
-                    shift_2d_vec = [0, shift_val] if self.integration_axis == 'vertical' else [shift_val, 0]
-                    aligned_2d = shift(clean_grid, shift_2d_vec, mode='nearest', order=1)
-                
-                if i0_val is not None and i0_val > 0.0:
-                    safe_denominator = i0_val
-                else:
-                    total_area = np.sum(aligned_1d)
-                    safe_denominator = total_area if total_area != 0 else 1e-8 
-                
-                normed_1d = aligned_1d / safe_denominator
-                normed_2d = aligned_2d / safe_denominator
-                
-                corr = np.corrcoef(normed_1d, self.running_mean_norm)[0, 1]
-                self.correlation_history.append(corr)
-
-                if self.track_integrity:
-                    self.qa_R.append(corr)
-                    if len(self.qa_R) > self.integrity_window:
-                        self.qa_R.pop(0)
-
-                if corr > self.config['thresholds']['shape_correlation_min']:
-                    self._welford_update(aligned_1d, aligned_2d, normed_1d, normed_2d, current_raw_int)
-                    self.logger.info(f"[ACCEPTED] {file_path.name} (R={corr:.3f})")
-                    self.needs_export = True
-                    
-                    for key, val in current_metadata.items():
-                        if key not in self.metadata_history:
-                            self.metadata_history[key] = []
-                        self.metadata_history[key].append(val)
-                else:
-                    self.logger.warning(f"[REJECTED] {file_path.name} (R={corr:.3f})")
-                    self.needs_export = True 
+                aligned_1d = shift(raw_1d, shift_val, mode='nearest', order=1)
+                shift_2d_vec = [0, shift_val] if self.integration_axis == 'vertical' else [shift_val, 0]
+                aligned_2d = shift(clean_grid, shift_2d_vec, mode='nearest', order=1)
             
-            self.processed_files.add(file_path)
-            self._export_data_and_plot()
-        except Exception as e:
-            self.logger.critical(f"Critical error on {file_path.name}: {e}")
+            norm_factor = i0_val if (i0_val is not None and i0_val > 0) else np.sum(aligned_1d)
+            norm_factor = max(norm_factor, 1e-8)
+            
+            normed_1d = aligned_1d / norm_factor
+            normed_2d = aligned_2d / norm_factor
+            
+            corr = np.corrcoef(normed_1d, self.running_mean_norm)[0, 1]
+            self.correlation_history.append(corr)
 
-    def _wait_for_write_completion(self, filepath: Path):
-        """Format-agnostic fast-polling to ensure OS write operations are complete."""
+            if self.track_integrity:
+                self.qa_R.append(corr)
+                if len(self.qa_R) > self.integrity_window:
+                    self.qa_R.pop(0)
+
+            if corr > self.config['thresholds']['shape_correlation_min']:
+                self._welford_update(aligned_1d, aligned_2d, normed_1d, normed_2d, current_raw_int)
+                self.logger.info(f"Accepted {file_path.name} (R={corr:.3f})")
+                self.needs_export = True
+                
+                for key, val in current_metadata.items():
+                    if key not in self.metadata_history:
+                        self.metadata_history[key] = []
+                    self.metadata_history[key].append(val)
+            else:
+                self.logger.warning(f"Rejected {file_path.name} (R={corr:.3f})")
+                self.needs_export = True 
+        
+        self.processed_files.add(file_path)
+        self._export_data_and_plot()
+
+    def _wait_for_write_completion(self, filepath: Path) -> bool:
+        """Polls file until OS finishes writing, with a timeout to prevent hanging."""
         historical_size = -1
+        start_time = time.time()
+        
         while True:
+            if (time.time() - start_time) > self.file_timeout:
+                self.logger.warning(f"Timeout waiting for file to finish writing: {filepath.name}")
+                return False
+                
             try:
                 current_size = filepath.stat().st_size
                 if current_size == historical_size and current_size > 0:
@@ -457,6 +525,7 @@ class AutomatedDetectorPipeline:
                 historical_size = current_size
             except FileNotFoundError:
                 pass
+            
             time.sleep(self.file_poll_interval)
     
     def _export_data_and_plot(self, force=False):
@@ -483,7 +552,6 @@ class AutomatedDetectorPipeline:
 
         pixels = np.arange(len(self.running_mean_raw))
 
-        # --- Data Archive Export ---
         h5_path = self.watch_dir / self.output_h5_name
         max_retries = 3
         
@@ -520,117 +588,22 @@ class AutomatedDetectorPipeline:
                 else:
                     self.logger.warning(f"Could not write HDF5 after {max_retries} attempts (file lock): {e}")
 
-        # --- Dashboard Rendering ---
+        #  Dashboard Rendering 
         axis_mode = self.config['processing'].get('integration_axis', 'vertical')
         corr_threshold = self.config.get('thresholds', {}).get('shape_correlation_min', 0.95)
-        
+
         try:
-            generate_plot(
-                data_1d = self.running_mean_norm,
-                data_2d = self.running_mean_2d_norm,
-                integration_axis = axis_mode,
-                title = "Pipeline Dashboard",
-                n_scans = self.n_valid_scans,
-                correlation_history = self.qa_R,
-                threshold = corr_threshold,
-                save_path = self.watch_dir / self.output_dash_name,
-                data_1d_sem = sem_norm,
-                total_scans = self.n_total_scans
+            self.renderer.render(
+                data_1d=self.running_mean_norm,
+                data_2d=self.running_mean_2d_norm,
+                n_scans=self.n_valid_scans,
+                total_scans=self.n_total_scans,
+                correlation_history=self.qa_R,
+                data_1d_sem=sem_norm
             )
         except Exception as e:
-            print(f"Dashboard error: {e}")
-
-def generate_plot(data_1d, data_2d, integration_axis="vertical", 
-                            title="Spectroscopy Scan", n_scans=None, 
-                            correlation_history=None, threshold = None,
-                            save_path=None, data_1d_sem=None, total_scans = None
-                            ):
-        """
-        Universal plotter for pipeline or jupyter notebook
-        """
-        fig = plt.figure(figsize=(10, 8))
+            self.logger.error(f"Dashboard rendering failed: {e}")
         
-        if n_scans is not None:
-            title = f"{title} | Scans: {n_scans}"
-
-        has_qa = correlation_history is not None and len(correlation_history) > 0
-        
-        if has_qa:
-            gs_main = gridspec.GridSpec(2, 1, height_ratios=[2, 0.7], hspace=0.3)
-            gs_spectra = gridspec.GridSpecFromSubplotSpec(
-                2, 2, subplot_spec=gs_main[0], 
-                height_ratios=[1, 1], width_ratios=[1, 0.03], 
-                hspace=0.0, wspace=0.02
-            )
-            ax3 = fig.add_subplot(gs_main[1])
-        else:
-            # If no qa
-            gs_spectra = gridspec.GridSpec(2, 2, width_ratios=[1, 0.03], hspace=0.0, wspace=0.02)
-
-        # --- 2. TOP: 1D Spectrum ---
-        ax1 = fig.add_subplot(gs_spectra[0, 0])
-        ax1.plot(data_1d, color='blue')
-        if data_1d_sem is not None:
-            x_vals = np.arange(len(data_1d))
-            ax1.fill_between(x_vals, 
-                            data_1d - 2*data_1d_sem, 
-                            data_1d + 2*data_1d_sem, 
-                            color='blue', alpha=0.3, label="2σ SEM")
-            ax1.legend(loc="upper right")
-        ax1.set_title(title, fontsize=14, pad=15)
-        ax1.set_ylabel("Normalized Intensity")
-        ax1.grid(True, alpha=0.3)
-        plt.setp(ax1.get_xticklabels(), visible=False)
-
-        # --- 3. MIDDLE: 2D Heatmap ---
-        ax2 = fig.add_subplot(gs_spectra[1, 0], sharex=ax1)
-        
-        if integration_axis == 'vertical':
-            im = ax2.imshow(data_2d, aspect='auto', cmap='magma', origin='lower')
-            ax2.set_xlabel("Dispersive Axis")
-            ax2.set_ylabel("Spatial Axis")
-        else:
-            # Transpose trick for horizontal 
-            im = ax2.imshow(data_2d.T, aspect='auto', cmap='magma', origin='lower')
-            ax2.set_xlabel("Dispersive Axis")
-            ax2.set_ylabel("Spatial Axis")
-
-        # --- 4. COLORBAR ---
-        cax = fig.add_subplot(gs_spectra[1, 1])
-        plt.colorbar(im, cax=cax, label='Normalized Intensity')
-
-        # --- 5. BOTTOM: qa ---
-        if has_qa:
-            corr_arr = np.array(correlation_history)
-            scans = np.arange(1, len(corr_arr) + 1)
-
-            end_scan = total_scans if total_scans else len(corr_arr)
-            start_scan = max(1, end_scan - len(corr_arr) + 1)
-            scans = np.arange(start_scan, end_scan + 1)
-                       
-            # Create masks for accepted and rejected data
-            accepted = corr_arr > threshold
-            rejected = corr_arr <= threshold
-            
-            # Plot Accepted
-            if np.any(accepted):
-                ax3.scatter(scans[accepted], corr_arr[accepted], color='blue', marker='.', s=30, label="Accepted")
-                
-            # Plot Rejected
-            if np.any(rejected):
-                ax3.scatter(scans[rejected], corr_arr[rejected], color='red', marker='x', s=20, label="Rejected")
-            
-            ax3.set_title("Sample Health (Pearson Correlation)")
-            ax3.set_ylabel("R-Value")
-            ax3.set_xlabel("Scan Number")
-            ax3.set_ylim(min(corr_arr) - 0.05, max(corr_arr) + 0.05)
-
-        # --- EXPORT LOGIC ---
-        if save_path:
-            fig.savefig(save_path, dpi=150, bbox_inches='tight')
-            plt.close(fig) 
-        else:
-            return fig
         
 class DataFileHandler(FileSystemEventHandler):
     """Watchdog event handler to trigger processing upon file creation."""
@@ -648,13 +621,8 @@ class DataFileHandler(FileSystemEventHandler):
 
 
 if __name__ == "__main__":
-    # Force Matplotlib to run in headless background mode
-    matplotlib.use('Agg')
-
-
     pipeline = AutomatedDetectorPipeline()
     
-    # --- Check for Existing Backlog ---
     print(f"Checking {pipeline.watch_dir} for existing backlog...")
     valid_extensions = {'.npy', '.h5', '.hdf5', '.sif','.tif','.tiff'}
     
@@ -667,8 +635,6 @@ if __name__ == "__main__":
         for file_path in existing_files:
             pipeline.process_file(file_path)
 
-
-    # --- Live System Monitoring ---
     event_handler = DataFileHandler(pipeline)
     observer = Observer()
     observer.schedule(event_handler, path=str(pipeline.watch_dir), recursive=False)
@@ -679,7 +645,6 @@ if __name__ == "__main__":
     try:
         while True:
             time.sleep(1)
-            # Idle flush: Force a final dashboard update if data flow stops
             if pipeline.needs_export and (time.time() - pipeline.last_export_time) > 1.0:
                 pipeline.logger.info("Pipeline idle. Flushing final dashboard frame...")
                 pipeline._export_data_and_plot(force=True)
