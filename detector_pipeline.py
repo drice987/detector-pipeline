@@ -113,16 +113,28 @@ class AutomatedDetectorPipeline:
         with open(config_path, 'r') as f:
             self.config = yaml.safe_load(f)
             
-        self.watch_dir = Path(self.config['directories']['watch_dir'])
+        dir_cfg = self.config['directories']
+        proc_cfg = self.config['processing']
+        export_cfg = self.config['export']
+        qa_cfg = self.config.get('qa', {})
+        init_cfg = self.config.get('initialization', {})
+        filter_cfg = self.config.get('filtering', {})
+
+        self.watch_dir = Path(dir_cfg['watch_dir'])
         self.watch_dir.mkdir(exist_ok=True)
         self.processed_files = set()
         
         # Pipeline Parameters
-        self.integration_axis = self.config['processing'].get('integration_axis', 'vertical')
-        self.use_dark = self.config['directories'].get('use_dark', False)
-        self.dark_filename = self.config['directories'].get('dark_filename', 'dark_background.h5')
-        self.min_init_scans = self.config['initialization'].get('min_init_scans', 3)
-        self.alignment_mode = self.config['processing'].get('alignment_mode', 'dynamic')
+        self.integration_axis = proc_cfg.get('integration_axis', 'vertical')
+        self.alignment_mode = proc_cfg.get('alignment_mode', 'dynamic')
+        
+        self.use_dark = dir_cfg.get('use_dark', False)
+        self.dark_filename = dir_cfg.get('dark_filename', 'dark_background.h5')
+        self.file_poll_interval = dir_cfg.get('poll_interval_sec', 0.01)
+        self.file_timeout = dir_cfg.get('file_timeout_sec', 10.0)
+        
+        self.min_init_scans = init_cfg.get('min_init_scans', 3)
+        self.glitch_threshold = filter_cfg.get('glitch_threshold_pct', 0.05)
         
         # State and Buffers
         self.is_initialized = False
@@ -151,17 +163,17 @@ class AutomatedDetectorPipeline:
         self.running_raw_intensity = 0.0
         
         # QA and metadata
-        self.track_integrity = self.config.get('qa', {}).get('enable_integrity_tracking', True)
-        self.integrity_window = self.config.get('qa', {}).get('rolling_window_size', 200)
+        self.track_integrity = qa_cfg.get('enable_integrity_tracking', True)
+        self.integrity_window = qa_cfg.get('rolling_window_size', 200)
         self.qa_R = []
-        self.metadata_config = self.config.get('export', {}).get('metadata_paths', 'none')
+        self.metadata_config = export_cfg.get('metadata_paths', 'none')
         self.metadata_history = {}
         
         # Export control
-        self.export_throttle = self.config.get('export', {}).get('throttle_sec', 0.5)
-        self.file_poll_interval = self.config.get('directories', {}).get('poll_interval_sec', 0.01)
-        self.file_timeout = self.config.get('directories', {}).get('file_timeout_sec', 10.0)
-        self.output_h5_name = self.config.get('export', {}).get('output_h5_filename', 'CURRENT_AVERAGE.h5')
+        self.export_throttle = export_cfg.get('throttle_sec', 0.5)
+        self.output_h5_name = export_cfg.get('output_h5_filename', 'CURRENT_AVERAGE.h5')
+        self.file_poll_interval = self.config.get('poll_interval_sec', 0.01)
+        self.file_timeout = self.config.get('file_timeout_sec', 10.0)
         self.last_export_time = 0.0
         self.needs_export = False
         
@@ -266,14 +278,15 @@ class AutomatedDetectorPipeline:
         cleaned = np.copy(z_grid)
         bad_y, bad_x = np.nonzero(glitch_mask)
         num_glitches = len(bad_y)
-        
-        if 0 < num_glitches < (z_grid.size * 0.05):
+        max_glitches = z_grid.size * self.glitch_threshold
+
+        if 0 < num_glitches < max_glitches:
             pad = filter_size // 2
             padded_grid = np.pad(z_grid, pad, mode='reflect')
             for y, x in zip(bad_y, bad_x):
                 neighborhood = padded_grid[y : y + filter_size, x : x + filter_size]
                 cleaned[y, x] = np.median(neighborhood)
-        elif num_glitches >= (z_grid.size * 0.05):
+        elif num_glitches >= max_glitches:
             cleaned = median_filter(z_grid, size=filter_size)
 
         return cleaned
