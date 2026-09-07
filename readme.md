@@ -1,5 +1,4 @@
 # 2D Detector Pipeline
-**Version: v1.0.0**
 
 A Python-based data reduction pipeline for real-time processing of 2D images. 
 
@@ -19,7 +18,7 @@ Built for continuous scanning environments at synchrotron beamlines, this script
 ## Examples
 
 ### Background Subtraction & Despiking
-The can easily background subtract and despike data. 
+It can easily background subtract and despike data. 
 
 <img src="assets/raw_data.png" width="700"><br>
 *Raw data with hot pixels and background distortion* 
@@ -31,10 +30,10 @@ The can easily background subtract and despike data.
 Pearson's R coefficient is used to analyze shape comparison to the running average, with built in cold-start (ie shutter closed on scan 1) safeties. 
 
 <img src="assets/dashboard_no_rejection.png" width="700"><br>
-*Here is the data with no rejection, showing obvious degredation of sample integrity currently being included in the average.*
+*Here is the data with no rejection, showing obvious degradation of sample integrity currently being included in the average.*
 
 <img src="assets/dashboard_rejection.png" width="700"><br>
-*And here is the same data with a R= 0.98 as a treshhold. R can be set by the user to the desired value depending on how noisy the data is.*
+*And here is the same data with a R= 0.98 as a threshold. R can be set by the user to the desired value depending on how noisy the data is.*
 
 ### Automatic Alignment
 The script can be set to align to certain features, such as an elastic line, to account for any drift.
@@ -44,11 +43,6 @@ The script can be set to align to certain features, such as an elastic line, to 
 
 <img src="assets/dashboard_aligned.png" width='700'><br>
 *Here is the same data with the automatic alignment with a window set around the first peak*
-
-## Jupyter Notebook Integration
-
-The pipeline's core mathematical and plotting functions are decoupled from the monitoring engine. <br>
-*See 'Example_analysis.ipynb' for a demonstration*
 
 ## Running with Docker
 This is designed to run in a persistent Docker environment.
@@ -64,7 +58,7 @@ This is designed to run in a persistent Docker environment.
     ```
 4. Run the pipeline
     ```bash
-    docker compose exec pipeline python detector_pipeline.py
+    docker compose exec pipeline python -m pipeline.main
     ```
 5. Shut Down
     ```bash
@@ -88,7 +82,7 @@ Run the pipeline:
 
 ```Bash
 
-python detector_pipeline.py
+python -m pipeline.main config.yaml
 ```
 Route your detector output to the watch_dir specified in your config.
 
