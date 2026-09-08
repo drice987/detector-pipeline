@@ -11,6 +11,12 @@ dist/
 *.egg-info/
 src/*.egg-info/
 
+# OS and editor files
+.DS_Store
+._*
+.vscode/
+.idea/
+
 # Environments
 .venv/
 venv/
