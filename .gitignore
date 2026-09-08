@@ -1,3 +1,16 @@
+# Byte-compiled / optimized / cache
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Packaging & Build Artifacts 
+build/
+dist/
+*.egg
+*.egg-info/
+src/*.egg-info/
+
 # Environments
 .venv/
 venv/
@@ -12,7 +25,10 @@ __pycache__/
 *.tiff
 *.sif
 synthetic_data/
+shared_data/
 
 # Pipeline Outputs
 current_ave.h5
 pipeline_operations.log
+pipeline.log
+pipeline_dashboard.png

@@ -7,7 +7,6 @@ services:
     command: tail -f /dev/null
     volumes:
       - .:/app
-      - ./shared_data:/app/shared_data
 
   # The simulation tool
   generator:
@@ -17,4 +16,3 @@ services:
     command: tail -f /dev/null
     volumes:
       - .:/app
-      - ./shared_data:/app/shared_data

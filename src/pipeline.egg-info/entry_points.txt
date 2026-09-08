@@ -1,2 +1,0 @@
-[console_scripts]
-detector-pipeline = pipeline.main:main
