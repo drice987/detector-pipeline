@@ -12,7 +12,7 @@ Built for continuous scanning environments at synchrotron beamlines, this script
 * **Sub-pixel Alignment:** Fits a 1D Gaussian to the data and applies a 2D shift to correct for drift during long exposures.
 * **Cosmic Ray Rejection:** Applies a sparse uniform/median filter to remove high-intensity anomalies before integration.
 * **Automated Scan Rejection:** Calculates the Pearson-R correlation of incoming scans against the running average. Scans falling below the defined threshold (e.g., beam dumps or shutter misfires) are excluded from the average.
-* **Low Memory Footprint:** Uses  Welford accumulator to handle thousands of images with a constant, minimal RAM requirement.
+* **Low Memory Footprint:** Uses Welford accumulator to handle thousands of images with a constant, minimal RAM requirement.
 * **Hardware Agnostic:** Dispersion axis (vertical or horizontal) and regions of interest are configured via YAML.
 
 ## Examples
@@ -44,6 +44,43 @@ The script can be set to align to certain features, such as an elastic line, to 
 <img src="assets/dashboard_aligned.png" width='700'><br>
 *Here is the same data with the automatic alignment with a window set around the first peak*
 
+## Installation
+Clone the repository and install the package:
+
+```bash
+git clone https://github.com/drice987/detector-pipeline.git
+cd detector-pipeline
+pip install -e .
+```
+### Optional Detector Formats
+Additional formats can be enabled via install extras:
+
+* **TIFF formats (`tifffile`):** 
+```bash
+pip install -e ".[tiff]"
+```
+* **Andor SIF formats(`sif_parser`):** 
+```
+pip install -e ".[sif]"
+```
+* **All formats:** 
+```
+pip install -e ".[all]"
+```
+
+## Usage
+Copy config.yaml and adjust the detector dimensions, crop boundaries, and integration axis for your setup.
+
+Run the pipeline:
+
+```Bash
+detector-pipeline config.yaml
+```
+(Or alternatively: `python -m pipeline config.yaml`)
+Route your detector output to the watch_dir specified in your config.
+
+The script will automatically update an averaged file (.h5) and a dashboard image (.png) as new data arrives.
+
 ## Running with Docker
 This is designed to run in a persistent Docker environment.
 
@@ -58,39 +95,16 @@ This is designed to run in a persistent Docker environment.
     ```
 4. Run the pipeline
     ```bash
-    docker compose exec pipeline python -m pipeline.main
+    docker compose exec pipeline detector-pipeline config.yaml
     ```
 5. Shut Down
     ```bash
     docker compose down
     ```
 
-## Installation
-Clone the repository and install the dependencies:
-
-```bash
-git clone https://github.com/drice987/detector-pipeline.git
-cd detector-pipeline
-pip install -r requirements.txt
-```
-Note: If your detector uses proprietary data formats, uncomment tifffile and/or sif_parser in requirements.txt before installing.
-Usage
-
-Copy config.yaml and adjust the detector dimensions, crop boundaries, and integration axis for your setup.
-
-Run the pipeline:
-
-```Bash
-
-python -m pipeline.main config.yaml
-```
-Route your detector output to the watch_dir specified in your config.
-
-The script will automatically update an averaged file (.h5) and a dashboard image (.png) as new data arrives.
-
 ### Configuration
 
-All pipeline parameters—including expected peak centers, despiking thresholds, and dark frame subtraction—are managed in config.yaml. 
+All pipeline parameters, including expected peak centers, despiking thresholds, and dark frame subtraction, are managed in `config.yaml`. 
 
 ## License
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.

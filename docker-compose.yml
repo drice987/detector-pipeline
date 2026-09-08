@@ -1,10 +1,9 @@
-version: '3.8'
-
 services:
   # The pipeline
   pipeline:
     build: .
     container_name: detector-pipeline
+    working_dir: /app
     command: tail -f /dev/null
     volumes:
       - .:/app
@@ -14,6 +13,7 @@ services:
   generator:
     build: .
     container_name: detector-generator
+    working_dir: /app
     command: tail -f /dev/null
     volumes:
       - .:/app

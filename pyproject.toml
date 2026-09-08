@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pipeline"
+version = "1.1.0"
+description = "Automated Live Data Reduction Pipeline for 2D Detectors"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "numpy",
+    "scipy",
+    "h5py",
+    "matplotlib",
+    "watchdog",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+tiff = [
+    "tifffile",
+]
+sif = [
+    "sif_parser",
+]
+# Convenience extra to install all optional format readers at once
+formats = [
+    "pipeline[tiff,sif]",
+]
+all = [
+    "pipeline[formats]",
+]
+
+[project.scripts]
+detector-pipeline = "pipeline.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
