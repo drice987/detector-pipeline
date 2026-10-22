@@ -1,4 +1,5 @@
 from importlib.metadata import PackageNotFoundError, version
+
 from .core import AutomatedDetectorPipeline, DataFileHandler
 from .io import read_detector_file, valid_extensions
 from .rendering import DashboardRenderer
@@ -11,10 +12,10 @@ except PackageNotFoundError:
 
 __all__ = [
     "AutomatedDetectorPipeline",
+    "DashboardRenderer",
     "DataFileHandler",
+    "EMAStats",
+    "WelfordRollingStats",
     "read_detector_file",
     "valid_extensions",
-    "WelfordRollingStats",
-    "EMAStats",
-    "DashboardRenderer",
 ]

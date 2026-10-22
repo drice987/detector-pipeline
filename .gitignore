@@ -38,3 +38,11 @@ current_ave.h5
 pipeline_operations.log
 pipeline.log
 pipeline_dashboard.png
+
+# Pytest & Coverage
+.pytest_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover

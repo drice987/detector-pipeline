@@ -1,7 +1,8 @@
 import argparse
-from pathlib import Path
 import time
+
 from watchdog.observers import Observer
+
 from pipeline import AutomatedDetectorPipeline, DataFileHandler, valid_extensions
 
 

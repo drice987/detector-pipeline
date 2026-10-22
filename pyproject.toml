@@ -24,6 +24,13 @@ tiff = [
 sif = [
     "sif_parser",
 ]
+
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "tifffile>=2024.1.0",
+]
+
 # Convenience extra to install all optional format readers at once
 formats = [
     "pipeline[tiff,sif]",
@@ -37,3 +44,7 @@ detector-pipeline = "pipeline.main:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra -q"
