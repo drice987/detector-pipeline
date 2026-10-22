@@ -1,3 +1,4 @@
+[![Tests](https://github.com/drice987/detector-pipeline/actions/workflows/tests.yml/badge.svg)](https://github.com/drice987/detector-pipeline/actions/workflows/tests.yml)
 # 2D Detector Pipeline
 
 A Python-based data reduction pipeline for real-time processing of 2D images. 
